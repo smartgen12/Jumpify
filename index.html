@@ -1,27 +1,442 @@
 <!DOCTYPE html>
-<html lang="ar">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neon Runner - HTML5 Game</title>
-    <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Dash: Infinite</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body {
+            background-color: #080810;
+            color: #ffffff;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none;
+        }
+        canvas {
+            background: #0d0d1a;
+            display: block;
+            box-shadow: 0 0 30px rgba(0, 255, 204, 0.2);
+            border-radius: 12px;
+        }
+    </style>
 </head>
 <body>
-    <div class="game-container">
-        <canvas id="gameCanvas" width="800" height="400"></canvas>
-        <div class="score">Score: <span id="score">0</span></div>
-        <div class="game-over" id="gameOverScreen">
-            <h1>GAME OVER</h1>
-            <p>Your Score: <span id="finalScore">0</span></p>
-            <button id="restartBtn">Play Again</button>
-        </div>
-        <div class="start-screen" id="startScreen">
-            <h1>NEON RUNNER</h1>
-            <p>Press SPACE to Jump | DOWN to Slide</p>
-            <button id="startBtn">Start Game</button>
-        </div>
-    </div>
-    <script src="script.js"></script>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Audio System (Synthesized Web Audio API - No External Files Needed)
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        let audioCtx;
+
+        function initAudio() {
+            if (!audioCtx) audioCtx = new AudioCtx();
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+
+            if (type === 'jump') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.exponentialRampToValueAtTime(400, now + 0.15);
+                gain.gain.setValueAtTime(0.3, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                osc.start(now);
+                osc.stop(now + 0.15);
+            } else if (type === 'coin') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.setValueAtTime(659.25, now + 0.08); // E5
+                gain.gain.setValueAtTime(0.2, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
+                osc.start(now);
+                osc.stop(now + 0.2);
+            } else if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(120, now);
+                osc.frequency.linearRampToValueAtTime(40, now + 0.3);
+                gain.gain.setValueAtTime(0.4, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            }
+        }
+
+        // Screen Resize Setup
+        function resizeCanvas() {
+            const maxWidth = 480;
+            const maxHeight = 800;
+            let w = window.innerWidth;
+            let h = window.innerHeight;
+
+            if (w > maxWidth) w = maxWidth;
+            if (h > maxHeight) h = maxHeight;
+
+            canvas.width = w;
+            canvas.height = h;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Game State Variables
+        let gameState = 'START'; // START, PLAYING, GAMEOVER
+        let score = 0;
+        let coins = 0;
+        let highScore = localStorage.getItem('neonDash_highScore') || 0;
+        let gameSpeed = 5;
+        let shakeTime = 0;
+
+        // Player Setup
+        let player = {
+            x: canvas.width / 2,
+            y: canvas.height - 120,
+            radius: 16,
+            color: '#00ffcc',
+            vy: 0,
+            jumpStrength: -11,
+            gravity: 0.55,
+            isGrounded: false,
+            hasShield: false
+        };
+
+        // Arrays
+        let obstacles = [];
+        let collectibles = [];
+        let particles = [];
+        let obstacleTimer = 0;
+        let obstacleInterval = 80;
+
+        // Touch & Key Input
+        function triggerAction() {
+            initAudio();
+            if (gameState === 'START' || gameState === 'GAMEOVER') {
+                resetGame();
+                gameState = 'PLAYING';
+            } else if (gameState === 'PLAYING' && player.isGrounded) {
+                player.vy = player.jumpStrength;
+                player.isGrounded = false;
+                playSound('jump');
+                createParticles(player.x, player.y + player.radius, '#00ffcc', 8);
+            }
+        }
+
+        window.addEventListener('pointerdown', triggerAction);
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                e.preventDefault();
+                triggerAction();
+            }
+        });
+
+        function resetGame() {
+            score = 0;
+            gameSpeed = 5;
+            obstacles = [];
+            collectibles = [];
+            particles = [];
+            obstacleTimer = 0;
+            player.y = canvas.height - 120;
+            player.vy = 0;
+            player.isGrounded = true;
+            player.hasShield = false;
+        }
+
+        // Particle System
+        function createParticles(x, y, color, count) {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 6,
+                    vy: (Math.random() - 0.5) * 6,
+                    size: Math.random() * 4 + 2,
+                    color: color,
+                    alpha: 1,
+                    life: 0.03
+                });
+            }
+        }
+
+        // Spawn Items & Obstacles
+        function spawnElements() {
+            const width = 80 + Math.random() * 60;
+            const height = 18;
+            const x = Math.random() * (canvas.width - width);
+            const y = -40;
+
+            obstacles.push({
+                x: x,
+                y: y,
+                width: width,
+                height: height,
+                color: '#ff0055',
+                passed: false
+            });
+
+            // 40% chance to spawn a coin above or below obstacle
+            if (Math.random() < 0.4) {
+                collectibles.push({
+                    x: x + width / 2,
+                    y: y - 30,
+                    radius: 10,
+                    color: '#ffcc00',
+                    type: 'coin'
+                });
+            }
+        }
+
+        // Update Logic
+        function update() {
+            if (gameState !== 'PLAYING') return;
+
+            // Player Dynamics
+            player.vy += player.gravity;
+            player.y += player.vy;
+
+            // Trail Particles
+            if (Math.random() < 0.5) {
+                particles.push({
+                    x: player.x,
+                    y: player.y,
+                    vx: (Math.random() - 0.5) * 1.5,
+                    vy: Math.random() * 2,
+                    size: Math.random() * 3 + 1,
+                    color: player.color,
+                    alpha: 0.6,
+                    life: 0.04
+                });
+            }
+
+            // Floor Collision
+            const groundLevel = canvas.height - 70;
+            if (player.y + player.radius >= groundLevel) {
+                player.y = groundLevel - player.radius;
+                player.vy = 0;
+                player.isGrounded = true;
+            }
+
+            // Game Speed & Difficulty
+            gameSpeed += 0.0008;
+            obstacleInterval = Math.max(35, 80 - Math.floor(score / 4));
+
+            obstacleTimer++;
+            if (obstacleTimer >= obstacleInterval) {
+                spawnElements();
+                obstacleTimer = 0;
+            }
+
+            // Obstacle Movement & Collision
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                obs.y += gameSpeed;
+
+                // Circle to Box Collision
+                let closestX = Math.max(obs.x, Math.min(player.x, obs.x + obs.width));
+                let closestY = Math.max(obs.y, Math.min(player.y, obs.y + obs.height));
+                let dx = player.x - closestX;
+                let dy = player.y - closestY;
+
+                if ((dx * dx + dy * dy) < (player.radius * player.radius)) {
+                    playSound('crash');
+                    shakeTime = 15;
+                    createParticles(player.x, player.y, '#ff0055', 25);
+                    gameState = 'GAMEOVER';
+                    if (score > highScore) {
+                        highScore = Math.floor(score);
+                        localStorage.setItem('neonDash_highScore', highScore);
+                    }
+                }
+
+                if (!obs.passed && obs.y > player.y) {
+                    score += 1;
+                    obs.passed = true;
+                }
+
+                if (obs.y > canvas.height) obstacles.splice(i, 1);
+            }
+
+            // Collectibles Logic
+            for (let i = collectibles.length - 1; i >= 0; i--) {
+                let item = collectibles[i];
+                item.y += gameSpeed;
+
+                let dx = player.x - item.x;
+                let dy = player.y - item.y;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < player.radius + item.radius) {
+                    playSound('coin');
+                    coins += 1;
+                    score += 5;
+                    createParticles(item.x, item.y, '#ffcc00', 12);
+                    collectibles.splice(i, 1);
+                } else if (item.y > canvas.height) {
+                    collectibles.splice(i, 1);
+                }
+            }
+
+            // Update Particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.alpha -= p.life;
+                if (p.alpha <= 0) particles.splice(i, 1);
+            }
+
+            // Screen Shake Decay
+            if (shakeTime > 0) shakeTime--;
+        }
+
+        // Graphics Rendering
+        function draw() {
+            ctx.save();
+
+            // Apply Screen Shake
+            if (shakeTime > 0) {
+                let rx = (Math.random() - 0.5) * 10;
+                let ry = (Math.random() - 0.5) * 10;
+                ctx.translate(rx, ry);
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Ground Floor
+            ctx.strokeStyle = '#00ffcc';
+            ctx.shadowColor = '#00ffcc';
+            ctx.shadowBlur = 12;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height - 70);
+            ctx.lineTo(canvas.width, canvas.height - 70);
+            ctx.stroke();
+
+            // Draw Particles
+            for (let p of particles) {
+                ctx.save();
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
+            // Draw Obstacles (Neon Glow)
+            for (let obs of obstacles) {
+                ctx.fillStyle = obs.color;
+                ctx.shadowColor = obs.color;
+                ctx.shadowBlur = 15;
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+            }
+
+            // Draw Coins
+            for (let item of collectibles) {
+                ctx.fillStyle = item.color;
+                ctx.shadowColor = item.color;
+                ctx.shadowBlur = 12;
+                ctx.beginPath();
+                ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Draw Player
+            ctx.fillStyle = player.color;
+            ctx.shadowColor = player.color;
+            ctx.shadowBlur = 20;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0; // Reset Shadow
+
+            // HUD UI (Score & Coins)
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 18px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${Math.floor(score)}`, 20, 35);
+            ctx.fillStyle = '#ffcc00';
+            ctx.fillText(`Coins: ${coins}`, 20, 60);
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'right';
+            ctx.fillText(`Best: ${highScore}`, canvas.width - 20, 35);
+
+            // UI Screens
+            if (gameState === 'START') {
+                ctx.fillStyle = 'rgba(8, 8, 16, 0.85)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = '#00ffcc';
+                ctx.shadowColor = '#00ffcc';
+                ctx.shadowBlur = 15;
+                ctx.font = 'bold 32px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('NEON DASH', canvas.width / 2, canvas.height / 2 - 50);
+
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '16px Arial';
+                ctx.fillText('Tap / Click / Space to Jump', canvas.width / 2, canvas.height / 2 + 10);
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillText('Collect coins for bonus points!', canvas.width / 2, canvas.height / 2 + 40);
+
+                ctx.fillStyle = '#00ffcc';
+                ctx.font = 'bold 18px Arial';
+                ctx.fillText('TAP ANYWHERE TO PLAY', canvas.width / 2, canvas.height / 2 + 90);
+            } else if (gameState === 'GAMEOVER') {
+                ctx.fillStyle = 'rgba(8, 8, 16, 0.88)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = '#ff0055';
+                ctx.shadowColor = '#ff0055';
+                ctx.shadowBlur = 15;
+                ctx.font = 'bold 34px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 50);
+
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '20px Arial';
+                ctx.fillText(`Score: ${Math.floor(score)}`, canvas.width / 2, canvas.height / 2 + 5);
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillText(`Coins Collected: ${coins}`, canvas.width / 2, canvas.height / 2 + 35);
+
+                ctx.fillStyle = '#00ffcc';
+                ctx.font = 'bold 18px Arial';
+                ctx.fillText('TAP TO RETRY', canvas.width / 2, canvas.height / 2 + 85);
+            }
+
+            ctx.restore();
+        }
+
+        // Loop Function
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
 </body>
 </html>
